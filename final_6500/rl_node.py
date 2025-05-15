@@ -6,6 +6,7 @@ from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
 from ackermann_msgs.msg import AckermannDriveStamped
 from geometry_msgs.msg import PoseStamped
+from visualization_msgs.msg import MarkerArray, Marker
 import numpy as np
 from stable_baselines3 import PPO
 import transforms3d.euler
@@ -31,7 +32,7 @@ class ParkingPolicyNode(Node):
         super().__init__('parking_policy_node')
 
         self.model = self.model = ort.InferenceSession(
-            "/home/ubuntu/f1tenth_ws/src/final_6500/models/3waypoint_model.onnx"
+            "/home/nvidia/f1tenth_ws/src/final_6500/models/3waypoint_model.onnx"
         )
         self.get_logger().info("Model loaded successfully")
         self.num_beams = 36
@@ -42,7 +43,7 @@ class ParkingPolicyNode(Node):
             durability=rclpy.qos.QoSDurabilityPolicy.VOLATILE,
         )
 
-        sim = True
+        sim = False
         if sim:
             pose_topic = '/ego_racecar/odom'
         else:
@@ -53,8 +54,9 @@ class ParkingPolicyNode(Node):
         self.create_subscription(Odometry, pose_topic, self.odom_callback, qos)
         self.create_subscription(PoseStamped, '/goal_pose', self.goal_callback, qos)
 
-        # Publisher
+        # Publishers
         self.drive_pub = self.create_publisher(AckermannDriveStamped, '/drive', qos)
+        self.viz_pub = self.create_publisher(MarkerArray, '/waypoints', qos)
 
         # State
         self.latest_scan = None
@@ -68,8 +70,8 @@ class ParkingPolicyNode(Node):
     def odom_callback(self, msg: Odometry):
         if self.waypoint_pos is None or self.latest_scan is None:
             return
-        x = msg.pose.position.x
-        y = msg.pose.position.y
+        x = msg.pose.pose.position.x
+        y = msg.pose.pose.position.y
         quat = msg.pose.pose.orientation
         _, _, yaw = transforms3d.euler.quat2euler([quat.w, quat.x, quat.y, quat.z])
         assert np.abs(yaw) <= np.pi, "Yaws should be in [-pi, pi]"
@@ -79,6 +81,8 @@ class ParkingPolicyNode(Node):
         ori_error = np.abs(remap_angle(yaw - self.waypoint_ori[self.waypoint_idx]))
         if pos_error < 0.1 and ori_error < np.deg2rad(10.0):
             self.waypoint_idx = min(self.waypoint_idx + 1, 2)
+            self.get_logger().info("Reached waypoint")
+            self.publish_waypoints()
         
         pose_obs = np.array([[body_pos_error[0], body_pos_error[1], yaw]], dtype=np.float32)
         vel_obs = np.array([[msg.twist.twist.linear.x, msg.twist.twist.linear.y, msg.twist.twist.angular.z]], dtype=np.float32)
@@ -117,7 +121,7 @@ class ParkingPolicyNode(Node):
         max_range = msg.range_max
         values = np.array(msg.ranges, dtype=np.float32)
         values = values.clip(min_range, max_range)
-        self.latest_scan[0] = values[::len(msg.ranges) // self.num_beams]
+        self.latest_scan[0] = values[:-1:len(msg.ranges) // self.num_beams]
 
     def goal_callback(self, msg: PoseStamped):
         clearance = 0.5
@@ -133,7 +137,7 @@ class ParkingPolicyNode(Node):
         if self.waypoint_pos is None:
             self.waypoint_pos = np.zeros((3, 2))
             self.waypoint_ori = np.zeros((3,))
-            self.get_logger().info("Received first target pose")
+        self.get_logger().info("Received target pose")
 
         waypoint_pos = np.array([[clearance + szx / 2, 1.5 * szy],
                                 [clearance, 1.5 * szy],
@@ -142,6 +146,36 @@ class ParkingPolicyNode(Node):
         self.waypoint_pos = waypoint_pos.T
         self.waypoint_ori = np.array([yaw, yaw + np.deg2rad(30.0), yaw])
         self.waypoint_ori = remap_angle(self.waypoint_ori)
+        self.waypoint_idx = 0
+        self.last_steering_angle = 0.0
+        self.publish_waypoints()
+
+    def publish_waypoints(self):
+        msg = MarkerArray()
+        for i, wp in enumerate(self.waypoint_pos):
+            mark = Marker()
+            if i == self.waypoint_idx:
+                mark.color.g = mark.color.a = 1.0
+                mark.color.r = mark.color.b = 0.0
+            else:
+                mark.color.b = mark.color.a = 1.0
+                mark.color.r = mark.color.g = 0.0
+            mark.action = Marker.ADD
+            mark.header.frame_id = 'map'
+            mark.ns = 'waypoints'
+            mark.id = i
+            mark.type = Marker.ARROW
+            mark.scale.x = 0.4
+            mark.scale.y = 0.075
+            mark.scale.z = 0.05
+            pose_yaw = self.waypoint_ori[i]
+            mark.pose.orientation.w = np.cos(pose_yaw/2)
+            mark.pose.orientation.z = np.sin(pose_yaw/2)
+            mark.pose.position.x = wp[0]
+            mark.pose.position.y = wp[1]
+            msg.markers.append(mark)
+        self.viz_pub.publish(msg)
+    
 
 
 def main(args=None):
