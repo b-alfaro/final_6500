@@ -58,14 +58,13 @@ class ParkingPolicyNode(Node):
         self.drive_pub = self.create_publisher(AckermannDriveStamped, '/drive', qos)
         self.viz_pub = self.create_publisher(MarkerArray, '/waypoints', qos)
 
-        # State
         self.latest_scan = None
         self.latest_odom = None
         self.last_steering_angle = 0.0
 
         self.waypoint_pos = None
         self.waypoint_ori = None                     
-        self.waypoint_idx = 0                     # Choose 0, 1, or 2
+        self.waypoint_idx = 0                   
 
     def odom_callback(self, msg: Odometry):
         if self.waypoint_pos is None or self.latest_scan is None:
