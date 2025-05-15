@@ -31,7 +31,7 @@ class ParkingPolicyNode(Node):
     def __init__(self):
         super().__init__('parking_policy_node')
 
-        self.model = self.model = ort.InferenceSession(
+        self.model = ort.InferenceSession(
             "/home/nvidia/f1tenth_ws/src/final_6500/models/3waypoint_model.onnx"
         )
         self.get_logger().info("Model loaded successfully")
